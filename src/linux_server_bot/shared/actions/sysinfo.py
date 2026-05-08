@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import logging
 
+from linux_server_bot.shared.cpu import read_cpu_percent
 from linux_server_bot.shared.shell import run_command, run_shell
 
 logger = logging.getLogger(__name__)
 
 _SYSINFO_SCRIPT = r"""
-# CPU
-cpu=$(top -b -n 1 | awk '/^%Cpu/ {printf "%.1f", 100 - $8}')
-echo "CPU|${cpu}%"
-
 # Memory
 free -m | awk '/^Mem/ {printf "MEM|%dMB|%dMB|%dMB|%dMB\n", $2, $3, $4, $6}'
 
@@ -45,6 +42,7 @@ echo "HOST|$(hostname)"
 
 def get_sysinfo_text() -> str:
     """Get full system info as structured, formatted text."""
+    cpu_data = get_cpu_usage()
     result = run_shell(_SYSINFO_SCRIPT, timeout=30)
     if not result.stdout.strip():
         return result.stderr or "Could not retrieve system info."
@@ -67,8 +65,11 @@ def get_sysinfo_text() -> str:
     out.append(f"\U0001f5a5 {hostname}")
     out.append("")
 
-    # CPU
-    cpu = lines.get("CPU", "N/A")
+    # CPU — read via Python /proc/stat diff; shell-based diff is unreliable
+    # when _SYSINFO_SCRIPT runs through nsenter double-wrapping (sleep gets
+    # mangled, producing total_diff of 2-4 instead of ~400 jiffies).
+    cpu_pct = cpu_data.get("cpu_percent")
+    cpu = f"{cpu_pct}%" if cpu_pct is not None else "N/A"
     out.append(f"\U0001f4c8 CPU: {cpu}")
 
     # Memory
@@ -118,12 +119,11 @@ def get_sysinfo_text() -> str:
 
 
 def get_cpu_usage() -> dict:
-    """Get CPU usage percentage."""
-    result = run_shell("top -bn 1 | awk '/^%Cpu/ {print 100 - $8}'")
-    try:
-        return {"cpu_percent": float(result.stdout.strip()), "success": True}
-    except (ValueError, IndexError):
-        return {"cpu_percent": None, "success": False, "error": "Could not parse CPU usage"}
+    """Get CPU usage percentage from /proc/stat over a 1-second window."""
+    pct = read_cpu_percent()
+    if pct is None:
+        return {"cpu_percent": None, "success": False, "error": "Could not read /proc/stat"}
+    return {"cpu_percent": pct, "success": True}
 
 
 def get_memory_usage() -> dict:

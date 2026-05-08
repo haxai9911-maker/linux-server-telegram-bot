@@ -6,6 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from linux_server_bot.shared.cpu import read_cpu_percent
 from linux_server_bot.shared.shell import run_shell
 from linux_server_bot.shared.telegram import escape_html
 
@@ -17,22 +18,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _get_cpu_usage() -> float | None:
-    """Get total CPU usage percentage (100 - idle) from top."""
-    result = run_shell("top -bn 1 | awk '/^%Cpu/ {printf \"%.1f\", 100 - $8}'")
-    try:
-        return float(result.stdout.strip())
-    except (ValueError, IndexError):
-        logger.warning("Could not parse CPU usage: %s", result.stdout)
-        return None
-
-
 def check_cpu(bot: telebot.TeleBot, config: AppConfig) -> None:
     """Check CPU usage with double-verification on high load."""
     from linux_server_bot.shared.telegram import send_to_all
 
     threshold = config.monitoring.thresholds.get("cpu_percent", 80)
-    usage = _get_cpu_usage()
+    usage = read_cpu_percent()
     if usage is None:
         return
 
@@ -41,11 +32,13 @@ def check_cpu(bot: telebot.TeleBot, config: AppConfig) -> None:
         return
 
     delay = int(config.monitoring.thresholds.get("recheck_delay_seconds", 5))
+    t0 = time.monotonic()
     time.sleep(delay)
-    usage2 = _get_cpu_usage()
+    usage2 = read_cpu_percent()
     if usage2 is None or usage2 <= threshold:
         return
 
+    elapsed = int(time.monotonic() - t0 + 0.5)
     # Get top consumers
     top_result = run_shell("ps -eo pid,%cpu,%mem,comm --sort=-%cpu | head -n 11")
     consumers = escape_html(top_result.stdout)
@@ -54,7 +47,7 @@ def check_cpu(bot: telebot.TeleBot, config: AppConfig) -> None:
         bot,
         config,
         f"\U0001f525 CPU usage is high (>{threshold}%). "
-        f"First: {usage:.1f}%, after {delay}s: {usage2:.1f}%.\n"
+        f"First: {usage:.1f}%, after {elapsed}s: {usage2:.1f}%.\n"
         f"Top consumers:\n<pre>{consumers}</pre>",
         parse_mode="HTML",
     )
