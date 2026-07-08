@@ -12,7 +12,6 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
 
 if [ -f config/config.yaml ]; then
     echo "config/config.yaml already exists - nothing to migrate."

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-time migration tool: convert existing .txt/.env config files to config.yaml.
 
-Searches the server for old linux_bot/ and linux_monitoring/ directories,
-reads the .txt config files, and generates a modern config.yaml.
+Searches ONLY the current directory for old linux_bot/ and linux_monitoring/ directories,
+reads the .txt config files, and generates a modern config.yaml in the current directory.
 """
 
 from __future__ import annotations
@@ -13,31 +13,27 @@ import sys
 
 import yaml
 
-# Common locations where the old bot might have been installed
-_SEARCH_PATHS = [
-    os.path.expanduser("~"),
-    "/opt",
-    "/home",
-    "/root",
-    "/srv",
-]
-
-
+# ============================================================
+# التغيير الأول: البحث فقط في المجلد الحالي (وليس كل الخادم)
+# ============================================================
 def _find_legacy_dirs() -> tuple[str | None, str | None]:
-    """Search the server for old linux_bot/ and linux_monitoring/ directories."""
+    """Search ONLY the current directory for old linux_bot/ and linux_monitoring/ directories."""
     bot_dir = None
     mon_dir = None
+    current_dir = os.getcwd()
 
-    print("Searching for old linux_bot/ and linux_monitoring/ directories...")
+    print(f"Searching for old linux_bot/ and linux_monitoring/ in: {current_dir}")
 
-    for base in _SEARCH_PATHS:
+    # نبحث فقط في المجلد الحالي، وليس في ~ و /opt و /home ...
+    base_paths = [current_dir]
+
+    for base in base_paths:
         if not os.path.isdir(base):
             continue
-        # Search up to 3 levels deep
+        # نبحث في المجلد الحالي ومجلد فرعي واحد فقط (بدلاً من 3 مستويات)
         for pattern in [
             os.path.join(base, "linux_bot"),
             os.path.join(base, "*", "linux_bot"),
-            os.path.join(base, "*", "*", "linux_bot"),
         ]:
             for match in glob.glob(pattern):
                 if os.path.isdir(match) and os.path.exists(os.path.join(match, "main.py")):
@@ -48,7 +44,6 @@ def _find_legacy_dirs() -> tuple[str | None, str | None]:
         for pattern in [
             os.path.join(base, "linux_monitoring"),
             os.path.join(base, "*", "linux_monitoring"),
-            os.path.join(base, "*", "*", "linux_monitoring"),
         ]:
             for match in glob.glob(pattern):
                 if os.path.isdir(match) and os.path.exists(os.path.join(match, "main.py")):
@@ -60,7 +55,7 @@ def _find_legacy_dirs() -> tuple[str | None, str | None]:
             break
 
     if not bot_dir and not mon_dir:
-        print("  No legacy directories found.")
+        print("  No legacy directories found in the current directory.")
     return bot_dir, mon_dir
 
 
@@ -89,35 +84,48 @@ def _parse_servers(lines: list[str]) -> list[dict]:
 
 
 def main():
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # ============================================================
+    # التغيير الثاني: استخدم المجلد الحالي (وليس جذر المشروع)
+    # ============================================================
+    base = os.getcwd()  # <--- هنا التغيير الأهم
 
-    # Try to find legacy directories on the server
+    # ============================================================
+    # التغيير الثالث: ابحث عن المجلدات القديمة في الحالي فقط
+    # ============================================================
     bot_dir, mon_dir = _find_legacy_dirs()
 
-    # Fall back to relative paths (old structure within the repo)
+    # إذا لم يجدها في المجلد الحالي، لا نذهب للجذر، بل نخرج مباشرة
+    if bot_dir is None and mon_dir is None:
+        print("\nERROR: Could not find linux_bot/ or linux_monitoring/ in the current directory.")
+        print(f"Please make sure these folders exist in: {base}")
+        print("And that each contains a 'main.py' file.")
+        sys.exit(1)
+
+    # نضع قيمة افتراضية للمجلدات إذا كانت None (لكنها لن تكون None لأننا خرجنا أعلاه)
     if bot_dir is None:
         bot_dir = os.path.join(base, "linux_bot")
     if mon_dir is None:
         mon_dir = os.path.join(base, "linux_monitoring")
 
-    # Read .env for defaults (check next to legacy dirs, then repo root)
+    # ============================================================
+    # التغيير الرابع: ابحث عن .env في المجلد الحالي فقط
+    # ============================================================
     env_vars = {}
-    env_candidates = [
-        os.path.join(os.path.dirname(bot_dir), ".env"),
-        os.path.join(base, ".env"),
-    ]
-    for env_path in env_candidates:
-        if os.path.exists(env_path):
-            print(f"Reading .env from: {env_path}")
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        key, _, val = line.partition("=")
-                        env_vars[key.strip()] = val.strip()
-            break
+    env_path = os.path.join(base, ".env")  # فقط في الحالي
+    if os.path.exists(env_path):
+        print(f"Reading .env from: {env_path}")
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    env_vars[key.strip()] = val.strip()
+    else:
+        print("No .env file found in current directory (skipping).")
 
-    # Read all config sources
+    # ============================================================
+    # باقي الكود كما هو (قراءة الملفات وتحليلها وبناء الـ YAML)
+    # ============================================================
     bot_services = _read_txt(os.path.join(bot_dir, "bot_services.txt"))
     bot_logfiles = _read_txt(os.path.join(bot_dir, "bot_logfiles.txt"))
     bot_servers_raw = _read_txt(os.path.join(bot_dir, "bot_servers.txt"))
@@ -129,9 +137,8 @@ def main():
         1 for lst in [bot_services, bot_logfiles, bot_servers_raw, mon_services, mon_containers, mon_servers_raw] if lst
     )
     if found == 0:
-        print("\nNo .txt config files found. Nothing to migrate.")
-        print("If your old installation is in a custom location, copy the")
-        print("linux_bot/ and linux_monitoring/ folders next to this script's repo and retry.")
+        print("\nNo .txt config files found inside the linux_bot/ or linux_monitoring/ folders.")
+        print("Nothing to migrate.")
         sys.exit(1)
 
     print(f"\nFound {found} config file(s) to migrate.")
@@ -193,6 +200,9 @@ def main():
         },
     }
 
+    # ============================================================
+    # التغيير الخامس: اكتب config.yaml في المجلد الحالي (وليس الجذر)
+    # ============================================================
     output = os.path.join(base, "config.yaml")
     if os.path.exists(output):
         print(f"\n{output} already exists!")
