@@ -1,0 +1,7 @@
+app:
+  name: Linux Server Bot
+  log_level: INFO
+
+docker:
+  enabled: true
+  socket: /var/run/docker.sock
