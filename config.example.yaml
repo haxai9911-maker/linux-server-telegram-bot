@@ -6,7 +6,7 @@ Copy this file to config/config.yaml and adjust values:
 telegram:
   bot_token: ${8408152614:AAGrwwjiekpZ-rK5HVaKNjaqFykLyBD4RR0}
   allowed_users:
-    - ${8408152614}
+    - ${984035964}
 
 wol:
   address: ${WOL_ADDRESS}
