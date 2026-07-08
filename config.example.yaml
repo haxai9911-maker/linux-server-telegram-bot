@@ -4,7 +4,7 @@ Copy this file to config/config.yaml and adjust values:
    mkdir -p config && cp config.example.yaml config/config.yaml
 
 telegram:
-  bot_token: ${8408152614:AAGrwwjiekpZ-rK5HVaKNjaqFykLyBD4RR0}
+  bot_token: ${984035964:AAGrwwjiekpZ-rK5HVaKNjaqFykLyBD4RR0}
   allowed_users:
     - ${984035964}
 
