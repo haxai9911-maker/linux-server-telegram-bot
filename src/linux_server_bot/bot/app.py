@@ -85,14 +85,19 @@ def _get_compose_project() -> str | None:
     """Return the Compose project name for this container, or *None*."""
     from linux_server_bot.shared.shell import run_command
 
-    # The bot's own container knows its compose project via its label.
+    # Use the container's hostname (which is the container name in Docker)
+    container_name = os.environ.get("HOSTNAME")
+    if not container_name:
+        logger.warning("HOSTNAME not set, cannot determine compose project")
+        return None
+
     result = run_command(
         [
             "docker",
             "inspect",
             "--format",
             '{{index .Config.Labels "com.docker.compose.project"}}',
-            "linux-server-bot",
+            container_name,
         ],
         timeout=10,
     )
@@ -101,15 +106,18 @@ def _get_compose_project() -> str | None:
     return None
 
 
-def _all_compose_containers_healthy() -> bool:
-    """Return True when every container in *this* Compose project is healthy."""
+def _all_compose_containers_ready() -> bool:
+    """
+    Return True when every container in *this* Compose project is considered ready.
+    A container is ready if it is either (healthy) or running (Up / running)
+    and not restarting, exited, or unhealthy.
+    """
     from linux_server_bot.shared.shell import run_command
 
     project = _get_compose_project()
     if project is None:
         return False
 
-    # List only containers belonging to the same docker-compose project.
     result = run_command(
         [
             "docker",
@@ -129,7 +137,34 @@ def _all_compose_containers_healthy() -> bool:
     if not lines:
         return False
 
-    return all("(healthy)" in line for line in lines)
+    for line in lines:
+        # Extract the status part (after the tab)
+        parts = line.split("\t", 1)
+        if len(parts) < 2:
+            continue
+        name, status = parts[0], parts[1]
+
+        # Unready states: restarting, exited, unhealthy
+        if "Restarting" in status:
+            logger.debug("Container %s is restarting, not ready", name)
+            return False
+        if "Exited" in status:
+            logger.debug("Container %s is exited, not ready", name)
+            return False
+        if "(unhealthy)" in status:
+            logger.debug("Container %s is unhealthy, not ready", name)
+            return False
+
+        # Ready if it is either explicitly healthy or simply running/up
+        # (This covers containers without a healthcheck)
+        if "(healthy)" in status or "Up" in status or "running" in status.lower():
+            continue
+        else:
+            # Any other state (e.g. Created, Paused) is considered not ready
+            logger.debug("Container %s is in unknown state: %s", name, status)
+            return False
+
+    return True
 
 
 def _pre_warm_handlers() -> None:
@@ -159,7 +194,7 @@ def _pre_warm_handlers() -> None:
 
 
 def _send_startup_message_when_ready(bot, warmup_thread) -> None:
-    """Background thread: waits for warmup + all containers healthy, then notifies."""
+    """Background thread: waits for warmup + all containers ready, then notifies."""
     import threading
 
     def _wait_and_send():
@@ -178,13 +213,13 @@ def _send_startup_message_when_ready(bot, warmup_thread) -> None:
         except Exception as exc:
             logger.warning("[startup] Telegram API warm-up failed (%.1fs): %s", time.monotonic() - t1, exc)
 
-        logger.info("[startup] waiting for all compose containers to be healthy...")
+        logger.info("[startup] waiting for all compose containers to be ready (healthy or running)...")
         deadline = time.time() + _HEALTH_POLL_TIMEOUT
         poll_count = 0
         while time.time() < deadline:
             poll_count += 1
-            if _all_compose_containers_healthy():
-                logger.info("[startup] all containers healthy (poll #%d, %.1fs)", poll_count, time.monotonic() - t0)
+            if _all_compose_containers_ready():
+                logger.info("[startup] all containers ready (poll #%d, %.1fs)", poll_count, time.monotonic() - t0)
 
                 # Pre-warm the actual handler queries so first tap is instant.
                 # Results are cached (30s TTL) in docker/services modules.
@@ -203,7 +238,7 @@ def _send_startup_message_when_ready(bot, warmup_thread) -> None:
                 logger.info("[startup] COMPLETE total=%.1fs", time.monotonic() - t0)
                 return
             time.sleep(_HEALTH_POLL_INTERVAL)
-        logger.warning("[startup] TIMED OUT waiting for healthy containers (%.1fs)", time.monotonic() - t0)
+        logger.warning("[startup] TIMED OUT waiting for ready containers (%.1fs)", time.monotonic() - t0)
 
     t = threading.Thread(target=_wait_and_send, daemon=True)
     t.start()
@@ -313,7 +348,7 @@ def main() -> None:
     _start_health_thread(bot)
     logger.info("[boot] health thread started (%.1fs)", time.monotonic() - boot_t0)
 
-    # Notify all users once warmup is done and every container is healthy.
+    # Notify all users once warmup is done and every container is ready.
     _send_startup_message_when_ready(bot, warmup_thread)
     logger.info("[boot] startup-message thread launched (%.1fs)", time.monotonic() - boot_t0)
 
